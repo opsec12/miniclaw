@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>MiniClaw</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d;
+    --text: #c9d1d9; --accent: #58a6ff; --green: #3fb950;
+    --red: #f85149; --muted: #8b949e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    margin: 0; padding: 30px 20px 60px; display: flex; justify-content: center;
+  }
+  .wrap { width: 100%; max-width: 700px; }
+  h1 { font-size: 20px; margin: 0 0 4px; color: var(--accent); }
+  .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
+  .badge {
+    display: inline-block; font-size: 11px; color: var(--muted);
+    border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px;
+    font-family: "SFMono-Regular", Consolas, monospace; margin-right: 6px;
+  }
+  .warn {
+    margin: 14px 0 20px; padding: 10px 14px; font-size: 12.5px;
+    background: rgba(210,153,34,0.08); border: 1px solid #d29922;
+    border-radius: 6px; color: var(--text); line-height: 1.5;
+  }
+  .tools-list { font-size: 12px; color: var(--muted); margin-bottom: 20px; line-height: 1.7; }
+  .tools-list code { color: var(--accent); }
+
+  #log {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 16px; min-height: 260px; max-height: 480px; overflow-y: auto; margin-bottom: 12px;
+  }
+  .msg { margin-bottom: 14px; }
+  .msg .who { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-bottom: 4px; }
+  .msg.user .who { color: var(--accent); }
+  .msg.assistant .who { color: var(--green); }
+  .msg .bubble { font-size: 14px; white-space: pre-wrap; word-break: break-word; }
+  .trace {
+    margin-top: 6px; font-family: "SFMono-Regular", Consolas, monospace; font-size: 11.5px;
+    color: var(--muted); background: var(--bg); border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px 10px;
+  }
+  .trace div { margin-bottom: 3px; }
+
+  textarea {
+    width: 100%; background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; padding: 12px;
+    font-size: 14px; resize: vertical; min-height: 60px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  textarea:focus { outline: none; border-color: var(--accent); }
+  button {
+    margin-top: 10px; background: var(--accent); color: #0d1117; border: none;
+    border-radius: 6px; padding: 9px 18px; font-size: 14px; font-weight: 600; cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>&gt; MiniClaw</h1>
+  <div class="subtitle">A very simple local assistant. <span class="badge">model: {{ model }}</span></div>
+
+  {% if dangerous_enabled %}
+  <div class="warn">&#9888; Dangerous tools are ENABLED (shell + file writes). Only run this on a machine/workspace you're fine with the model touching.</div>
+  {% else %}
+  <div class="warn">Running in safe mode — shell and file-write tools are disabled. Set <code>ENABLE_DANGEROUS_TOOLS=1</code> to turn them on.</div>
+  {% endif %}
+
+  <div class="tools-list">
+    Active tools:
+    {% for name, spec in tools.items() %}
+      <code>{{ name }}</code>{% if not loop.last %}, {% endif %}
+    {% endfor %}
+  </div>
+
+  <div id="log"></div>
+
+  <textarea id="input" placeholder="Ask MiniClaw something... e.g. what time is it? or calculate 12*7+3"></textarea>
+  <br>
+  <button id="send">Send</button>
+</div>
+
+<script>
+const log = document.getElementById("log");
+const input = document.getElementById("input");
+const sendBtn = document.getElementById("send");
+let history = [];
+
+function addMessage(who, text, trace) {
+  const div = document.createElement("div");
+  div.className = "msg " + who;
+  let html = `<div class="who">${who}</div><div class="bubble"></div>`;
+  div.innerHTML = html;
+  div.querySelector(".bubble").textContent = text;
+  if (trace && trace.length) {
+    const t = document.createElement("div");
+    t.className = "trace";
+    trace.forEach(step => {
+      const row = document.createElement("div");
+      row.textContent = `⚙ ${step.tool}(${JSON.stringify(step.args)}) → ${step.result}`;
+      t.appendChild(row);
+    });
+    div.appendChild(t);
+  }
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+async function send() {
+  const message = input.value.trim();
+  if (!message) return;
+  addMessage("user", message);
+  history.push({ role: "user", content: message });
+  input.value = "";
+  sendBtn.disabled = true;
+  sendBtn.textContent = "Thinking…";
+
+  try {
+    const res = await fetch("/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, history: history.slice(0, -1) }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      addMessage("assistant", "Error: " + (data.error || "something went wrong"));
+    } else {
+      addMessage("assistant", data.reply, data.trace);
+      history.push({ role: "assistant", content: data.reply });
+    }
+  } catch (err) {
+    addMessage("assistant", "Request failed: " + err.message);
+  } finally {
+    sendBtn.disabled = false;
+    sendBtn.textContent = "Send";
+  }
+}
+
+sendBtn.addEventListener("click", send);
+input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) send();
+});
+</script>
+</body>
+</html>
